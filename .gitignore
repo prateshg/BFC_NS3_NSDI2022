@@ -1,9 +1,9 @@
 *.yibo
 *.swp
-out*
 *.log
 ns3-backpressure/obs*
-ns3-backpressure/waf-tools/*
+ns3-backpressure/waf-tools/*.pyc
 .*
-build/*
-.pyc
+ns3-backpressure/build/*
+*.pyc
+ns3-backpressure/*.pyc

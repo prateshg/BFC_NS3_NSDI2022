@@ -1,8 +1,8 @@
 # NS-3 simulator for BFC
-This is an NS-3 simulator for Backpressure Flow Control (NSDI 2022)
+This is the NS-3 simulation code for Backpressure Flow Control (NSDI 2022).
 
 ## Note
-This code can help reproduce figure 10 and 11 from the NSDI paper. The code is not clean and might certain parameters hardcoded. In case you wish you to the change the setup please don't hesitate to contact me (g.pratish@gmail.com).
+This code can help reproduce figure 10 and 11 from the NSDI paper. The code is not clean and certain parameters are hardcoded. In case you wish you to the change the setup please don't hesitate to contact me (g.pratish@gmail.com).
 
 ## Quick Start
 

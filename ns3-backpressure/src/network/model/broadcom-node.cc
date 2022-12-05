@@ -142,11 +142,11 @@ namespace ns3 {
 		BroadcomNode::CheckIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize)
 	{
 		NS_ASSERT(port < pCnt);
-		if (m_usedTotalBytes + psize > m_maxBufferBytes)  //buffer full, usually should not reach here.
+		/*if (m_usedTotalBytes + psize > m_maxBufferBytes)  //buffer full, usually should not reach here.
 		{
 			std::cout << "WARNING: Drop because ingress buffer full"<<m_usedEgressSPBytes[GetEgressSP(port, qIndex)]<<" "<<m_usedTotalBytes<<" "<<psize<<" sid "<<m_node_id<<" \n";
 			return false;
-		}
+		}*/
 		// if (m_usedIngressPGBytes[port][qIndex] + psize > m_pg_min_cell && m_usedIngressPortBytes[port] + psize > m_port_min_cell) // exceed guaranteed, use share buffer
 		// {
 		// 	if (m_usedIngressSPBytes[GetIngressSP(port, qIndex)] > m_buffer_cell_limit_sp)

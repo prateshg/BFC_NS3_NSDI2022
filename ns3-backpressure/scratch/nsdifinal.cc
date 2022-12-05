@@ -44,7 +44,7 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 bool use_dynamic_pfc_threshold = true, packet_level_ecmp = false, flow_level_ecmp = true;
-uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
+uint32_t packet_payload_size = 1000, l2_chunk_size = 4000, l2_ack_interval = 256;
 double pause_time = 5, simulator_stop_time = 3.01, app_start_time = 1.0, app_stop_time = 9.0;
 std::string data_rate, link_delay, topology_file, flow_file, tcp_flow_file, trace_file, trace_output_file;
 bool used_port[65536*64] = { 0 };
@@ -72,7 +72,7 @@ bool w_dctcp = false;
 bool w_3 = false;
 bool w_4 = false;
 
-uint32_t fixed_window_size = 15;
+uint32_t fixed_window_size = 150;
 
 bool enable_buffer_stats = true;
 
@@ -202,37 +202,6 @@ int main(int argc, char *argv[])
 				link_delay = v;
 				std::cout << "LINK_DELAY\t\t\t" << link_delay << "\n";
 			}
-			else if (key.compare("PACKET_PAYLOAD_SIZE") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				packet_payload_size = v;
-				std::cout << "PACKET_PAYLOAD_SIZE\t\t" << packet_payload_size << "\n";
-			}
-			else if (key.compare("L2_CHUNK_SIZE") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				l2_chunk_size = v;
-				std::cout << "L2_CHUNK_SIZE\t\t\t" << l2_chunk_size << "\n";
-			}
-			else if (key.compare("L2_ACK_INTERVAL") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				l2_ack_interval = v;
-				std::cout << "L2_ACK_INTERVAL\t\t\t" << l2_ack_interval << "\n";
-			}
-			else if (key.compare("L2_BACK_TO_ZERO") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				l2_back_to_zero = v;
-				if (l2_back_to_zero)
-					std::cout << "L2_BACK_TO_ZERO\t\t\t" << "Yes" << "\n";
-				else
-					std::cout << "L2_BACK_TO_ZERO\t\t\t" << "No" << "\n";
-			}
 			else if (key.compare("L2_TEST_READ") == 0)
 			{
 				uint32_t v;
@@ -276,13 +245,6 @@ int main(int argc, char *argv[])
 				}
 				else
 					std::cout << "SEND_IN_CHUNKS\t\t\t" << "No" << "\n";
-			}
-			else if (key.compare("ERROR_RATE_PER_LINK") == 0)
-			{
-				double v;
-				conf >> v;
-				error_rate_per_link = v;
-				std::cout << "ERROR_RATE_PER_LINK\t\t" << error_rate_per_link << "\n";
 			}
 			else if (key.compare("POISSON_DISTRIBUTION") == 0)
 			{
@@ -331,29 +293,6 @@ int main(int argc, char *argv[])
 				{
 					std::cout << "CREATE_INCAST\t\t" << "No" << "\n";
 				}
-			}
-			else if (key.compare("ENABLE_WINDOW") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				enable_window = v;
-				if (enable_window)
-				{
-					 // flow_rate -= 32 * 10 * 1000000000.0*0.05;
-					 // flows_per_sec = flow_rate/(8.0*avg_flow_size);
-						std::cout << "ENABLE_WINDOW\t\t" << "Yes" << "\n";
-				}
-				else
-				{
-					std::cout << "ENABLE_WINDOW\t\t" << "No" << "\n";
-				}
-			}
-			else if (key.compare("FIXED_WINDOW_SIZE") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				fixed_window_size = v;
-				std::cout << "FIXED_WINDOW_SIZE\t\t" << fixed_window_size << "\n";
 			}
 			else if (key.compare("ENABLE_BUFFER_STATS") == 0)
 			{
