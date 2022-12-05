@@ -1,0 +1,9 @@
+*.yibo
+*.swp
+out*
+*.log
+obs*
+waf-tools/*
+.*
+build/*
+.pyc

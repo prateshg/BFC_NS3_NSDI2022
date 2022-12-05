@@ -1,0 +1,1965 @@
+/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+/*
+* Copyright (c) 2006 Georgia Tech Research Corporation, INRIA
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License version 2 as
+* published by the Free Software Foundation;
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* alcong with this program; if not, write to the Free Software
+* Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+*
+* Author: Yibo Zhu <yibzh@microsoft.com>
+*/
+
+#define __STDC_LIMIT_MACROS 1
+#include <stdint.h>
+#include <stdio.h>
+#include "ns3/qbb-net-device.h"
+#include "ns3/log.h"
+#include "ns3/boolean.h"
+#include "ns3/uinteger.h"
+#include "ns3/double.h"
+#include "ns3/data-rate.h"
+#include "ns3/object-vector.h"
+#include "ns3/pause-header.h"
+#include "ns3/drop-tail-queue.h"
+#include "ns3/assert.h"
+#include "ns3/ipv4.h"
+#include "ns3/ipv4-header.h"
+#include "ns3/simulator.h"
+#include "ns3/point-to-point-channel.h"
+#include "ns3/qbb-channel.h"
+#include "ns3/random-variable.h"
+#include "ns3/flow-id-tag.h"
+#include "ns3/qbb-header.h"
+#include "ns3/error-model.h"
+#include "ns3/cn-header.h"
+#include "ns3/ppp-header.h"
+#include "ns3/udp-header.h"
+#include "ns3/seq-ts-header.h"
+#include "ns3/pointer.h"
+
+#include <iostream>
+
+NS_LOG_COMPONENT_DEFINE("QbbNetDevice");
+
+namespace ns3 {
+
+	NS_OBJECT_ENSURE_REGISTERED(QbbNetDevice);
+
+	TypeId
+		QbbNetDevice::GetTypeId(void)
+	{
+		static TypeId tid = TypeId("ns3::QbbNetDevice")
+			.SetParent<PointToPointNetDevice>()
+			.AddConstructor<QbbNetDevice>()
+			.AddAttribute("QbbEnabled",
+				"Enable the generation of PAUSE packet.",
+				BooleanValue(true),
+				MakeBooleanAccessor(&QbbNetDevice::m_qbbEnabled),
+				MakeBooleanChecker())
+			.AddAttribute("QcnEnabled",
+				"Enable the generation of PAUSE packet.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_qcnEnabled),
+				MakeBooleanChecker())
+			.AddAttribute("DynamicThreshold",
+				"Enable dynamic threshold.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_dynamicth),
+				MakeBooleanChecker())
+			.AddAttribute("ClampTargetRate",
+				"Clamp target rate.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_EcnClampTgtRate),
+				MakeBooleanChecker())
+			.AddAttribute("ClampTargetRateAfterTimeInc",
+				"Clamp target rate after timer increase.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_EcnClampTgtRateAfterTimeInc),
+				MakeBooleanChecker())
+			.AddAttribute("PauseTime",
+				"Number of microseconds to pause upon congestion",
+				UintegerValue(5),
+				MakeUintegerAccessor(&QbbNetDevice::m_pausetime),
+				MakeUintegerChecker<uint32_t>())
+			.AddAttribute("CNPInterval",
+				"The interval of generating CNP",
+				DoubleValue(50.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_qcn_interval),
+				MakeDoubleChecker<double>())
+			.AddAttribute("AlphaResumInterval",
+				"The interval of resuming alpha",
+				DoubleValue(55.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_alpha_resume_interval),
+				MakeDoubleChecker<double>())
+			.AddAttribute("RPTimer",
+				"The rate increase timer at RP in microseconds",
+				DoubleValue(1500.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_rpgTimeReset),
+				MakeDoubleChecker<double>())
+			.AddAttribute("FastRecoveryTimes",
+				"The rate increase timer at RP",
+				UintegerValue(5),
+				MakeUintegerAccessor(&QbbNetDevice::m_rpgThreshold),
+				MakeUintegerChecker<uint32_t>())
+			.AddAttribute("DCTCPGain",
+				"Control gain parameter which determines the level of rate decrease",
+				DoubleValue(1.0 / 16),
+				MakeDoubleAccessor(&QbbNetDevice::m_g),
+				MakeDoubleChecker<double>())
+			.AddAttribute("MinRate",
+				"Minimum rate of a throttled flow",
+				DataRateValue(DataRate("100Mb/s")),
+				MakeDataRateAccessor(&QbbNetDevice::m_minRate),
+				MakeDataRateChecker())
+			.AddAttribute("ByteCounter",
+				"Byte counter constant for increment process.",
+				UintegerValue(150000),
+				MakeUintegerAccessor(&QbbNetDevice::m_bc),
+				MakeUintegerChecker<uint32_t>())
+			.AddAttribute("RateAI",
+				"Rate increment unit in AI period",
+				DataRateValue(DataRate("5Mb/s")),
+				MakeDataRateAccessor(&QbbNetDevice::m_rai),
+				MakeDataRateChecker())
+			.AddAttribute("RateHAI",
+				"Rate increment unit in hyperactive AI period",
+				DataRateValue(DataRate("50Mb/s")),
+				MakeDataRateAccessor(&QbbNetDevice::m_rhai),
+				MakeDataRateChecker())
+			.AddAttribute("NPSamplingInterval",
+				"The QCN NP sampling interval",
+				DoubleValue(0.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_qcn_np_sampling_interval),
+				MakeDoubleChecker<double>())
+			.AddAttribute("NACK Generation Interval",
+				"The NACK Generation interval",
+				DoubleValue(500.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_nack_interval),
+				MakeDoubleChecker<double>())
+			.AddAttribute("L2BackToZero",
+				"Layer 2 go back to zero transmission.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_backto0),
+				MakeBooleanChecker())
+			.AddAttribute("L2TestRead",
+				"Layer 2 test read go back 0 but NACK from n.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_testRead),
+				MakeBooleanChecker())
+			.AddAttribute("L2ChunkSize",
+				"Layer 2 chunk size. Disable chunk mode if equals to 0.",
+				UintegerValue(0),
+				MakeUintegerAccessor(&QbbNetDevice::m_chunk),
+				MakeUintegerChecker<uint32_t>())
+			.AddAttribute("L2AckInterval",
+				"Layer 2 Ack intervals. Disable ack if equals to 0.",
+				UintegerValue(0),
+				MakeUintegerAccessor(&QbbNetDevice::m_ack_interval),
+				MakeUintegerChecker<uint32_t>())
+			.AddAttribute("L2WaitForAck",
+				"Wait for Ack before sending out next message.",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::m_waitAck),
+				MakeBooleanChecker())
+			.AddAttribute("L2WaitForAckTimer",
+				"Sender's timer of waiting for the ack",
+				DoubleValue(500.0),
+				MakeDoubleAccessor(&QbbNetDevice::m_waitAckTimer),
+				MakeDoubleChecker<double>())
+			.AddAttribute("EnableRateStats",
+				"Should rate stats be printed",
+				BooleanValue(true),
+				MakeBooleanAccessor(&QbbNetDevice::enable_rate_stats),
+				MakeBooleanChecker())
+			.AddAttribute ("TxBeQueue", 
+					"A queue to use as the transmit queue in the device.",
+					PointerValue (),
+					MakePointerAccessor (&QbbNetDevice::m_queue),
+					MakePointerChecker<Queue> ())
+			.AddAttribute("EnableQbbStats",
+				"Should qbb stats be printed",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::enable_qbb_stats),
+				MakeBooleanChecker())
+			.AddAttribute("EnablePriority",
+				"Whether all packets are queued on one queue",
+				BooleanValue(false),
+				MakeBooleanAccessor(&QbbNetDevice::enable_priority),
+				MakeBooleanChecker())
+			;
+
+		return tid;
+	}
+
+uint32_t id = 1;
+uint32_t n_int = 100;
+	QbbNetDevice::QbbNetDevice()
+	{
+		NS_LOG_FUNCTION(this);
+		m_ecn_source = new std::vector<ECNAccount>;
+		for (uint32_t i = 0; i < qCnt; i++)
+		{
+			m_paused[i] = false;
+		}
+		m_qcn_np_sampling = 0;
+		//std::cout<<"m_bps = "<<m_bps<<"\n";
+		for (uint32_t i = 0; i < fCnt; i++)
+		{
+			//std::cout<<"m_rate = "<<m_rate[i]<<"\n";
+			//std::cout<<"m_rateAll = "<<m_rateAll[i][0]<<"\n";
+			m_sendingBuffer[i] = CreateObject<DropTailQueue>();
+            m_lastseq[i] = 0;
+            m_available_receiving[i] = true;
+            m_available_queue[i] = true;
+	    		m_acked[i] = 0;
+			curr_seq[i] = 0;
+			window[i] = 0;
+			m_credits[i] = 0;
+
+			m_nextAvail[i] = Time(0);
+			//m_findex_udpport_map[i] = 0;
+			m_findex_qindex_map[i] = 0;
+			m_waitingAck[i] = false;
+			if(i>=1)
+			{
+				available_sending_queues.insert(i);
+				available_receiving_queues.insert(i);
+			}
+			for (uint32_t j = 0; j < maxHop; j++)
+			{
+				m_txBytes[i][j] = m_bc;				//we don't need this at the beginning, so it doesn't matter what value it has
+				m_rpWhile[i][j] = m_rpgTimeReset;	//we don't need this at the beginning, so it doesn't matter what value it has
+				m_rpByteStage[i][j] = 0;
+				m_rpTimeStage[i][j] = 0;
+				m_alpha[i][j] = 0.5;
+				m_rpStage[i][j] = 0; //not in any qcn stage
+			}
+		}
+		window[0]=1000;
+		for (uint32_t i = 0; i < pCnt; i++)
+		{
+			m_ECNState[i] = 0;
+			m_ECNIngressCount[i] = 0;
+			m_ECNEgressCount[i] = 0;
+		}
+		m_ecn_source->resize(fCnt);
+		qbbid = id;
+		id++;
+		is_paused = false;
+
+		printStats = Simulator::Schedule(MicroSeconds(1000010), &QbbNetDevice::PrintStatistics, this);
+
+	}
+
+	QbbNetDevice::~QbbNetDevice()
+	{
+		NS_LOG_FUNCTION(this);
+	}
+
+	void
+		QbbNetDevice::DoDispose()
+	{
+		std::cerr<<"Entered do dispose???????????????????????\n";
+		NS_LOG_FUNCTION(this);
+		// Cancel all the Qbb events
+		for (uint32_t i = 0; i < qCnt; i++)
+		{
+			Simulator::Cancel(m_resumeEvt[i]);
+		}
+
+		for (uint32_t i = 0; i < fCnt; i++)
+		{
+			Simulator::Cancel(m_rateIncrease[i]);
+		}
+
+		for (uint32_t i = 0; i < pCnt; i++)
+			for (uint32_t j = 0; j < qCnt; j++)
+				Simulator::Cancel(m_recheckEvt[i][j]);
+		PointToPointNetDevice::DoDispose();
+	}
+
+	void
+		QbbNetDevice::TransmitComplete(void)
+	{
+		NS_LOG_FUNCTION(this);
+		NS_ASSERT_MSG(m_txMachineState == BUSY, "Must be BUSY if transmitting");
+		m_txMachineState = READY;
+		NS_ASSERT_MSG(m_currentPkt != 0, "QbbNetDevice::TransmitComplete(): m_currentPkt zero");
+		m_phyTxEndTrace(m_currentPkt);
+		m_currentPkt = 0;
+		DequeueAndTransmit();
+	}
+
+	void
+		QbbNetDevice::DequeueAndTransmit(void)
+	{
+		//std::cout<<"m_bps = "<<m_bps<<"\n";
+		NS_LOG_FUNCTION(this);
+		if (m_txMachineState == BUSY) return;	// Quit if channel busy
+		Ptr<Packet> p;
+		// window[0] = 1000;
+		// if (m_node->GetNodeType() == 0) {
+		// 	for (int i = 1; i < fCnt; i++) {
+		// 		if (i!=0 && !m_queue->m_queues[i]->IsEmpty())
+		// 			curr_seq[i] = GetSeq(m_queue->m_queues[i]->Peek()->Copy());
+		// 		window[i] = uint32_t((m_rate[i].GetBitRate() * 0.0000125) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+		// 		if (window[i] < 3) window[i] = 3;
+		// 	}
+		// }
+		if (m_node->GetNodeType() == 0 && m_qcnEnabled) //QCN enable NIC    
+		{
+			p = m_queue->DequeueQCN(m_paused, m_nextAvail, m_findex_qindex_map, m_qcnEnabled, curr_seq, m_acked, window, enable_priority, is_paused);
+		}
+		else if (m_node->GetNodeType() == 0) //QCN disable NIC
+		{
+			p = m_queue->DequeueQCN(m_paused, m_nextAvail, m_findex_qindex_map, m_qcnEnabled, curr_seq, m_acked, window, enable_priority, is_paused);
+			//p = m_queue->DequeueNIC(m_paused);
+		}
+		else   //switch, doesn't care about qcn, just send
+		{
+			//p = m_queue->Dequeue(m_paused);		//this is strict priority
+			p = m_queue->DequeueRR(m_paused, m_qcnEnabled, enable_priority, is_paused);		//this is round-robin
+		}
+		if (p != 0)
+		{
+			m_snifferTrace(p);
+			m_promiscSnifferTrace(p);
+			Ipv4Header h;
+			Ptr<Packet> packet = p->Copy();
+			uint16_t protocol = 0;
+			ProcessHeader(packet, protocol);
+			packet->RemoveHeader(h);
+			FlowIdTag t;
+			if (m_node->GetNodeType() == 0) //I am a NIC, do QCN
+			{
+				uint32_t fIndex = m_queue->GetLastQueue();
+				// if(window[fIndex]<15)
+				//std::cout<<window[fIndex]<<" W\n";
+				if(m_qcnEnabled)// Put condition on fIndex
+				{
+					NS_ASSERT(fIndex < fCnt);
+					if (m_rate[fIndex] == 0)			//late initialization	
+					{
+						m_rate[fIndex] = m_bps;
+						for (uint32_t j = 0; j < maxHop; j++)
+						{
+							m_rateAll[fIndex][j] = m_bps;
+							m_targetRate[fIndex][j] = m_bps;
+						}	
+					}
+						window[fIndex] = uint32_t((m_rate[fIndex].GetBitRate() * 0.00001) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+						if (window[fIndex] < 3) window[fIndex] = 3;
+	                //NS_ASSERT(creditsDue > 0.0);
+	                //std::cout<<m_tInterframeGap<<"\n";
+					Time nextSend = m_tInterframeGap + Seconds((1000.0*8.0)/(m_rate[fIndex].GetBitRate()));// Assuming 1KB packet
+					std::cout<<" Rate "<<m_rate[fIndex].GetBitRate()<<" next send "<<nextSend<<" T: "<<Simulator::Now()<<" ID: "<<qbbid<<" Win: "<<window[fIndex]<<"\n";
+					m_nextAvail[fIndex] = Simulator::Now() + nextSend;
+					for (uint32_t i = 0; i < 1; i++)//CHECK??
+					{
+						if (m_rpStage[fIndex][i] > 0)
+							m_txBytes[fIndex][i] -= p->GetSize();
+						else
+							m_txBytes[fIndex][i] = m_bc;
+						if (m_txBytes[fIndex][i] < 0)
+						{
+							std::cerr<<"m_bc "<<m_bc<<"\n";
+							if (m_rpStage[fIndex][i] == 1)
+							{
+								rpr_fast_byte(fIndex, i);
+							}
+							else if (m_rpStage[fIndex][i] == 2)
+							{
+								rpr_active_byte(fIndex, i);
+							}
+							else if (m_rpStage[fIndex][i] == 3)
+							{
+								rpr_hyper_byte(fIndex, i);
+							}
+						}
+					}
+				}
+				if (h.GetProtocol() == 17 && m_waitAck) //if it's udp, check wait_for_ack
+				{
+					UdpHeader udph;
+					packet->RemoveHeader(udph);
+					SeqTsHeader sth;
+					packet->RemoveHeader(sth);
+					if (sth.GetSeq() >= m_milestone_tx[fIndex] - 1)
+					{
+						m_nextAvail[fIndex] = Simulator::Now() + Seconds(32767); //stop sending this flow until acked
+						if (!m_waitingAck[fIndex])
+						{
+							//std::cout << "Waiting the ACK of the message of flow " << fIndex << " " << sth.GetSeq() << ".\n";
+							//fflush(stdout);
+							m_retransmit[fIndex] = Simulator::Schedule(MicroSeconds(m_waitAckTimer), &QbbNetDevice::Retransmit, this, fIndex);
+							m_waitingAck[fIndex] = true;
+						}
+					}
+				}
+				p->RemovePacketTag(t);
+				TransmitStart(p);
+				if(fIndex!=0 && m_queue->GetNBytes(fIndex)>0)
+				{
+					curr_seq[fIndex] = GetSeq(m_queue->m_queues[fIndex]->Peek()->Copy());
+				}
+				if(enable_rate_stats && fIndex != 0)
+				{
+						UdpHeader udph;
+						packet->RemoveHeader(udph);
+						SeqTsHeader sth;
+						packet->RemoveHeader(sth);
+						if(sth.GetSeq()%n_int==0)
+						{
+							std::cout<<"Se 1."<<(int)qbbid/2<<" "<<udph.GetSourcePort()<<" "<<sth.GetSeq()<<" "<<Simulator::Now()<<" \n";
+						}
+				}
+			}
+			else //I am a switch, do ECN if this is not a pause
+			{
+				if (m_queue->GetLastQueue() == qCnt - 1)//this is a pause or cnp, send it immediately!
+				{
+
+				    p->RemovePacketTag(t);
+					TransmitStart(p);
+				}
+				else
+				{
+					//switch ECN
+					p->PeekPacketTag(t);
+					uint32_t inDev = t.GetFlowId();
+					NS_ASSERT(inDev < pCnt);
+					//CHECK??
+					m_node->m_broadcom->RemoveFromIngressAdmission(inDev, m_queue->GetLastQueue(), p->GetSize());//CHECK??--Earlier remove ingress was done later- while dequeue and transmit was happening- it can be in either ingress or egress- not both
+					m_node->m_broadcom->RemoveFromEgressAdmission(m_ifIndex, m_queue->GetLastQueue(), p->GetSize());
+					if (m_qcnEnabled)
+					{
+						PppHeader ppp;
+						p->RemoveHeader(ppp);
+						p->RemoveHeader(h);
+						bool egressCongested = ShouldSendCN(inDev, m_ifIndex, m_queue->GetLastQueue());
+						if (egressCongested)
+						{
+							h.SetEcn((Ipv4Header::EcnType)0x03);
+						}
+						p->AddHeader(h);
+						p->AddHeader(ppp);
+					}
+					p->RemovePacketTag(t);
+					TransmitStart(p);
+				}
+			}
+			return;
+		}
+		else //No queue can deliver any packet
+		{
+			NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
+			//if (m_nextSend.IsExpired()) {
+				Simulator::Cancel(m_nextSend);
+				m_nextSend = Simulator::Schedule(NanoSeconds(uint32_t((8000.0*1000000000.0)/(0.9*m_bps.GetBitRate()))), &QbbNetDevice::DequeueAndTransmit, this);
+				//Simulator::Schedule(MicroSeconds(1), &QbbNetDevice::DequeueAndTransmit, this);
+			//}
+			//nothing to send, possibly due to qcn flow control, if so reschedule sending
+			/*if (m_node->GetNodeType() == 0 && m_qcnEnabled && m_nextSend.IsExpired()) //nothing to send, possibly due to qcn flow control, if so reschedule sending
+			{
+				// PrintStatus(std::cerr);
+				//std::cerr<<"here "<<"\n";
+				Time t = Simulator::GetMaximumSimulationTime();
+				for (uint32_t i = 0; i < m_queue->m_fcount; i++)//CHECK??
+				{
+					if (m_queue->GetNBytes(i) == 0 || ((m_available_queue[i]) && (m_sendingBuffer[i]->IsEmpty())))
+						continue;
+					t = Min(m_nextAvail[i], t);
+				}
+				if (
+					t < Simulator::GetMaximumSimulationTime() &&
+					t.GetTimeStep() > Simulator::Now().GetTimeStep())
+				{
+					NS_LOG_LOGIC("Next DequeueAndTransmit at " << t << " or " << (t - Simulator::Now()) << " later");
+					NS_ASSERT(t > Simulator::Now());
+					m_nextSend = Simulator::Schedule(t - Simulator::Now(), &QbbNetDevice::DequeueAndTransmit, this);
+				}
+			}*/
+		}
+		return;
+	}
+
+	void
+		QbbNetDevice::Retransmit(uint32_t findex)
+	{
+		std::cout << "Resending the message of flow " << findex << ".\n";
+		fflush(stdout);
+		m_queue->RecoverQueue(m_sendingBuffer[findex], findex);
+		m_nextAvail[findex] = Simulator::Now();
+		m_waitingAck[findex] = false;
+		DequeueAndTransmit();
+	}
+
+
+	void
+		QbbNetDevice::Resume(unsigned qIndex)
+	{
+		NS_LOG_FUNCTION(this << qIndex);
+		if(!enable_priority)
+		{
+			NS_ASSERT_MSG(m_paused[qIndex], "Must be PAUSEd");
+		}
+		//std::cout<<"Resumed "<<qIndex<<" at "<<qbbid<<" Time "<<Simulator::Now()<<"\n";
+		m_paused[qIndex] = false;
+		is_paused = false;
+		NS_LOG_INFO("Node " << m_node->GetId() << " dev " << m_ifIndex << " queue " << qIndex <<
+			" resumed at " << Simulator::Now().GetSeconds());
+		DequeueAndTransmit();
+	}
+
+	void
+		QbbNetDevice::PauseFinish(unsigned qIndex)
+	{
+		Resume(qIndex);
+	}
+
+
+	void
+		QbbNetDevice::Receive(Ptr<Packet> packet)
+	{
+		NS_LOG_FUNCTION(this << packet);
+
+		if (m_receiveErrorModel && m_receiveErrorModel->IsCorrupt(packet))
+		{
+			// 
+			// If we have an error model and it indicates that it is time to lose a
+			// corrupted packet, don't forward this packet up, let it go.
+			//
+			m_phyRxDropTrace(packet);
+			return;
+		}
+
+		uint16_t protocol = 0;
+
+		Ptr<Packet> p = packet->Copy();
+		ProcessHeader(p, protocol);
+
+		Ipv4Header ipv4h;
+		p->RemoveHeader(ipv4h);
+
+		if ((ipv4h.GetProtocol() != 0xFF && ipv4h.GetProtocol() != 0xFD && ipv4h.GetProtocol() != 0xFC) || m_node->GetNodeType() > 0)
+		{ //This is not QCN feedback, not NACK, or I am a switch so I don't care
+			if (ipv4h.GetProtocol() != 0xFE) //not PFC
+			{
+				packet->AddPacketTag(FlowIdTag(m_ifIndex));
+				if (m_node->GetNodeType() == 0) //NIC
+				{
+					if (ipv4h.GetProtocol() == 17)	//look at udp only
+					{
+						uint16_t ecnbits = ipv4h.GetEcn();
+
+						UdpHeader udph;
+						p->RemoveHeader(udph);
+						SeqTsHeader sth;
+						p->PeekHeader(sth);
+
+						p->AddHeader(udph);
+
+						bool found = false;
+						uint32_t i, key = 0;
+						//uint32_t port = udph.GetSourcePort();
+
+						uint32_t source_int = (ipv4h.GetSource()).Get();
+						uint32_t priority_grp = GetPriority(p->Copy());
+						uint32_t size = (p->Copy())->GetSize();
+						uint32_t prt = udph.GetSourcePort();
+
+						if(receiver_index_map.find(source_int)==receiver_index_map.end()
+							|| receiver_index_map[source_int].find(prt)== receiver_index_map[source_int].end()
+							|| receiver_index_map[source_int][prt].find(priority_grp)==receiver_index_map[source_int][prt].end())
+						{
+							if(!available_receiving_queues.empty())
+							{
+								i = (*available_receiving_queues.begin());
+								found = true;
+								available_receiving_queues.erase(i);
+								receiver_index_map[source_int][prt][priority_grp]= i;
+									key = i;
+									ECNAccount tmp;
+									tmp.qIndex = GetPriority(p->Copy());
+									tmp.source = ipv4h.GetSource();
+									if(m_qcnEnabled)
+									{
+										if (ecnbits != 0 && Simulator::Now().GetMicroSeconds() > m_qcn_np_sampling && tmp.qIndex != 1) //dctcp
+										{
+											tmp.ecnbits |= ecnbits;
+											tmp.qfb = 1;
+										}
+										else
+										{
+											tmp.ecnbits = 0;
+											tmp.qfb = 0;
+										}
+										tmp.total = 1;
+									}
+									tmp.port = udph.GetSourcePort();
+									NS_ASSERT(key < fCnt);
+									ReceiverNextExpectedSeq[key] = 0;
+									m_nackTimer[key] = Simulator::Now();
+									m_milestone_rx[key] = m_ack_interval;
+									m_lastNACK[key] = -1;
+									(*m_ecn_source)[key] = tmp;
+
+									m_available_receiving[key] = false;
+									CheckandSendQCN(tmp.source, tmp.qIndex, tmp.port, key);
+							}
+							else{
+								std::cerr<<"Out of receiver queues\n";
+								NS_ASSERT(false);
+							}
+						}
+						else{
+							i = receiver_index_map[source_int][prt][priority_grp];
+							NS_ASSERT(!m_available_receiving[i]);
+							found = true;
+								key = i;
+								if(m_qcnEnabled)
+								{
+									if (ecnbits != 0 && Simulator::Now().GetMicroSeconds() > m_qcn_np_sampling)
+									{
+										(*m_ecn_source)[i].ecnbits |= ecnbits;
+										(*m_ecn_source)[i].qfb++;
+									}
+									(*m_ecn_source)[i].total++;
+								}
+						}
+
+
+						// for (i = 0; i < m_ecn_source->size(); ++i)
+						// {
+						// 	if ((!m_available_receiving[i]) && (*m_ecn_source)[i].source == ipv4h.GetSource() && (*m_ecn_source)[i].qIndex == GetPriority(p->Copy()) && (*m_ecn_source)[i].port == udph.GetSourcePort())
+						// 	{
+						// 		found = true;
+						// 		if(m_qcnEnabled)
+						// 		{
+						// 			if (ecnbits != 0 && Simulator::Now().GetMicroSeconds() > m_qcn_np_sampling)
+						// 			{
+						// 				(*m_ecn_source)[i].ecnbits |= ecnbits;
+						// 				(*m_ecn_source)[i].qfb++;
+						// 			}
+						// 			(*m_ecn_source)[i].total++;
+						// 		}
+						// 		key = i;
+						// 		break;
+						// 	}
+						// }
+						// if(!found)	
+						// {
+						// 	for(i = 0; i < m_ecn_source->size(); ++i)
+						// 	{
+						// 		if(m_available_receiving[i])
+						// 		{
+						// 			found = true;
+
+						// 			key = i;
+						// 			ECNAccount tmp;
+						// 			tmp.qIndex = GetPriority(p->Copy());
+						// 			tmp.source = ipv4h.GetSource();
+						// 			if(m_qcnEnabled)
+						// 			{
+						// 				if (ecnbits != 0 && Simulator::Now().GetMicroSeconds() > m_qcn_np_sampling && tmp.qIndex != 1) //dctcp
+						// 				{
+						// 					tmp.ecnbits |= ecnbits;
+						// 					tmp.qfb = 1;
+						// 				}
+						// 				else
+						// 				{
+						// 					tmp.ecnbits = 0;
+						// 					tmp.qfb = 0;
+						// 				}
+						// 				tmp.total = 1;
+						// 			}
+						// 			tmp.port = udph.GetSourcePort();
+						// 			NS_ASSERT(key < fCnt);
+						// 			ReceiverNextExpectedSeq[key] = 0;
+						// 			m_nackTimer[key] = Simulator::Now();
+						// 			m_milestone_rx[key] = m_ack_interval;
+						// 			m_lastNACK[key] = -1;
+						// 			(*m_ecn_source)[key] = tmp;
+
+						// 			m_available_receiving[key] = false;
+						// 			CheckandSendQCN(tmp.source, tmp.qIndex, tmp.port, key);
+						// 			break;
+						// 		}
+						// 	}
+						// }
+                        NS_ASSERT(i<fCnt);
+						if (!found)
+						{
+							std::cerr<<"Receiving Queues over ERROR\n";
+						}
+
+						int x = ReceiverCheckSeq(sth.GetSeq(), key, uint32_t(sth.GetTsUint()), udph.GetSourcePort(), ipv4h.GetSource(), priority_grp, size);//sth.GetFSeq());
+						if (x == 2) //generate NACK
+						{
+							Ptr<Packet> newp = Create<Packet>(0);
+							qbbHeader seqh;
+							seqh.SetSeq(ReceiverNextExpectedSeq[key]);
+							seqh.SetPG(GetPriority(p->Copy()));
+							seqh.SetPort(udph.GetSourcePort());
+							newp->AddHeader(seqh);
+							Ipv4Header head;	// Prepare IPv4 header
+							head.SetDestination(ipv4h.GetSource());
+							Ipv4Address myAddr = m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal();
+							head.SetSource(myAddr);
+							head.SetProtocol(0xFD); //nack=0xFD
+							head.SetTtl(64);
+							head.SetPayloadSize(newp->GetSize());
+							head.SetIdentification(UniformVariable(0, 65536).GetValue());
+							newp->AddHeader(head);
+							uint32_t protocolNumber = 2048;
+							AddHeader(newp, protocolNumber);	// Attach PPP header
+							//if (m_qcnEnabled)
+								m_queue->Enqueue(newp, 0);
+							//else
+							//	m_queue->Enqueue(newp, qCnt - 1);
+							DequeueAndTransmit();
+						}
+						else if (x == 1) //generate ACK
+						{
+							Ptr<Packet> newp = Create<Packet>(0);
+							qbbHeader seqh;
+							seqh.SetSeq(ReceiverNextExpectedSeq[key]);
+							seqh.SetPG(GetPriority(p->Copy()));
+							seqh.SetPort(udph.GetSourcePort());
+							newp->AddHeader(seqh);
+							Ipv4Header head;	// Prepare IPv4 header
+							head.SetDestination(ipv4h.GetSource());
+							Ipv4Address myAddr = m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal();
+							head.SetSource(myAddr);
+							head.SetProtocol(0xFC); //ack=0xFC
+							head.SetTtl(64);
+							head.SetPayloadSize(newp->GetSize());
+							head.SetIdentification(UniformVariable(0, 65536).GetValue());
+							newp->AddHeader(head);
+							uint32_t protocolNumber = 2048;
+							AddHeader(newp, protocolNumber);	// Attach PPP header
+							//if (m_qcnEnabled)
+								m_queue->Enqueue(newp, 0);
+							//else
+							//	m_queue->Enqueue(newp, qCnt - 1);
+							DequeueAndTransmit();
+						}
+					}
+				}
+				PointToPointReceive(packet);
+			}
+			else // If this is a Pause, stop the corresponding queue
+			{
+				if (!m_qbbEnabled) return;
+				PauseHeader pauseh;
+				p->RemoveHeader(pauseh);
+				unsigned qIndex = pauseh.GetQIndex();
+				//std::cout<<"Stopping "<<qIndex<<" at "<<qbbid<<" Time "<<Simulator::Now()<<"\n";
+				m_paused[qIndex] = true;
+				is_paused =true;
+				if (pauseh.GetTime() > 0)
+				{
+					if(!enable_priority)
+					{
+						Simulator::Cancel(m_resumeEvt[qIndex]);
+						m_resumeEvt[qIndex] = Simulator::Schedule(MicroSeconds(pauseh.GetTime()), &QbbNetDevice::PauseFinish, this, qIndex);
+					}
+					else{
+						Simulator::Cancel(m_resumeEvt[3]);
+						m_resumeEvt[3] = Simulator::Schedule(MicroSeconds(pauseh.GetTime()), &QbbNetDevice::PauseFinish, this, 3);
+					}
+					
+				}
+				else
+				{
+					if(!enable_priority)
+					{
+						Simulator::Cancel(m_resumeEvt[qIndex]);
+						PauseFinish(qIndex);
+					}
+					else{
+						Simulator::Cancel(m_resumeEvt[3]);
+						PauseFinish(3);
+					}
+				}
+			}
+		}
+		else if (ipv4h.GetProtocol() == 0xFF)
+		{
+			//std::cout<<"Error : Handling qcn\n";
+			// QCN on NIC
+			// This is a Congestion signal
+			// Then, extract data from the congestion packet.
+			// We assume, without verify, the packet is destinated to me
+			CnHeader cnHead;
+			p->RemoveHeader(cnHead);
+			uint32_t qIndex = cnHead.GetQindex();
+			if (qIndex == 1)		//DCTCP
+			{
+				std::cout << "TCP--ignore\n";
+				return;
+			}
+			uint32_t udpport = cnHead.GetFlow();
+			uint16_t ecnbits = cnHead.GetECNBits();
+			uint16_t qfb = cnHead.GetQfb();
+			uint16_t total = cnHead.GetTotal();
+
+			uint32_t i;
+			// for (i = 1; i < m_queue->m_fcount; i++)
+			// {
+			// 	if ( m_findex_udpport_map[i] == udpport && m_findex_qindex_map[i] == qIndex )
+			// 		{
+			// 			// if(m_available_queue[i])
+			// 			// {
+			// 			// 	std::cout<<"QCN feedback on available queue\n";
+			// 			// 	return;
+			// 			// }
+			// 			break;
+			// 		}
+			// }
+			if (queue_index_map.find(udpport) == queue_index_map.end() || queue_index_map[udpport].find(qIndex) == queue_index_map[udpport].end())
+			{
+				std::cout << "ERROR: QCN NIC cannot find the flow\n";
+				return;
+			}
+			i = queue_index_map[udpport][qIndex];
+
+			if (qfb == 0)
+			{
+				std::cout << "ERROR: Unuseful QCN\n";
+				return;	// Unuseful CN
+			}
+			if (m_rate[i] == 0)			//lazy initialization	
+			{
+				m_rate[i] = m_bps;
+				for (uint32_t j = 0; j < maxHop; j++)
+				{
+					m_rateAll[i][j] = m_bps;
+					m_targetRate[i][j] = m_bps;	//targetrate remembers the last rate
+				}
+			}
+			//std::cerr<<"mbps "<<m_bps<<"\n";
+			if (ecnbits == 0x03)
+			{
+				//std::cerr<<"Before congestion "<<m_rate[i]<<"at port and qbbid"<<udpport<<" "<<qbbid<<"\n";
+				rpr_cnm_received(i, 0, qfb*1.0 / (total + 1));
+			}
+			m_rate[i] = m_bps;
+			for (uint32_t j = 0; j < maxHop; j++)
+				m_rate[i] = std::min(m_rate[i], m_rateAll[i][j]);
+			window[i] = uint32_t((m_rate[i].GetBitRate() * 0.00001) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+			if (window[i] < 1) window[i] = 1;
+			//std::cerr<<"After congestion "<<m_rate[i]<<"at port and qbbid"<<udpport<<" "<<qbbid<<"\n";
+			PointToPointReceive(packet);
+		}
+
+		else if (ipv4h.GetProtocol() == 0xFD)//NACK on NIC
+		{
+			qbbHeader qbbh;
+			p->Copy()->RemoveHeader(qbbh);
+
+			int qIndex = qbbh.GetPG();
+			int seq = qbbh.GetSeq();
+			int port = qbbh.GetPort();
+			int i;
+			// for (i = 1; i < m_queue->m_fcount; i++)
+			// {
+			// 	if (m_findex_udpport_map[i] == port && m_findex_qindex_map[i] == qIndex)
+			// 	{
+			// 		break;
+			// 	}
+			// }
+			if (queue_index_map.find(port) == queue_index_map.end() || queue_index_map[port].find(qIndex) == queue_index_map[port].end())
+			{
+				std::cout << "ERROR: NACK NIC cannot find the flow\n";
+				return;
+			}
+			else{
+				i = queue_index_map[port][qIndex];
+			}
+
+			if (!m_sendingBuffer[i]->IsEmpty())
+			{
+				uint32_t buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+				if (!m_backto0)
+				{
+					if (buffer_seq > seq)
+					{
+						std::cout << "ERROR: Sendingbuffer miss!\n";
+					}
+					while (seq > buffer_seq)
+					{
+						m_sendingBuffer[i]->Dequeue();
+						if (m_sendingBuffer[i]->IsEmpty())
+						{
+							std::cerr<<"Dequeuing from empty ERROR--\n";
+								break;
+						}
+						buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+					}
+				}
+				else
+				{
+					uint32_t goback_seq = seq / m_chunk*m_chunk;
+					if (buffer_seq > goback_seq)
+					{
+						std::cout << "ERROR: Sendingbuffer miss!\n";
+					}
+					while (goback_seq > buffer_seq)
+					{
+						m_sendingBuffer[i]->Dequeue();
+						if (m_sendingBuffer[i]->IsEmpty())
+						{
+							std::cerr<<"Dequeuing from empty ERROR--\n";
+								break;
+						}
+						buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+					}
+
+				}
+			}
+
+			m_queue->RecoverQueue(m_sendingBuffer[i], i);
+			if(i!=0 && m_queue->GetNBytes(i)>0)
+				{
+					curr_seq[i] = GetSeq(m_queue->m_queues[i]->Peek()->Copy());
+				}
+
+			if (m_waitAck && m_waitingAck[i])
+			{
+				m_nextAvail[i] = Simulator::Now();
+				Simulator::Cancel(m_retransmit[i]);
+				m_waitingAck[i] = false;
+				DequeueAndTransmit();
+			}
+
+			PointToPointReceive(packet);
+		}
+		else if (ipv4h.GetProtocol() == 0xFC)//ACK on NIC
+		{
+			qbbHeader qbbh;
+			p->Copy()->RemoveHeader(qbbh);
+
+			int qIndex = qbbh.GetPG();
+			int seq = qbbh.GetSeq();
+			int port = qbbh.GetPort();
+			int i;
+			// for (i = 1; i < m_queue->m_fcount; i++)
+			// {
+			// 	if (m_findex_udpport_map[i] == port && m_findex_qindex_map[i] == qIndex)
+			// 	{
+			// 		break;
+			// 	}
+			// }
+			if (queue_index_map.find(port) == queue_index_map.end() || queue_index_map[port].find(qIndex) == queue_index_map[port].end())
+			{
+				std::cout << "ERROR: ACK NIC cannot find the flow\n";
+				return ;
+			}
+			else{
+				i = queue_index_map[port][qIndex];
+			}
+			m_acked[i] = seq;
+			//std::cout<<"port "<<port<<" "<<" qbbid "<<qbbid<<" qindex "<<i<<" m_acked "<<m_acked[i]<<" curr_seq "<<curr_seq<<" window "<<window[i]<<"\n";
+			if (!m_sendingBuffer[i]->IsEmpty())
+			{
+				uint32_t buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+
+				if (m_ack_interval == 0)
+				{
+					std::cout << "ERROR: shouldn't receive ack\n";
+				}
+				else
+				{
+					if (!m_backto0)
+					{
+						while (seq > buffer_seq)
+						{
+							m_sendingBuffer[i]->Dequeue();
+							if (m_sendingBuffer[i]->IsEmpty())
+							{
+								break;
+							}
+							buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+						}
+					}
+					else
+					{
+						uint32_t goback_seq = seq / m_chunk*m_chunk;
+						while (goback_seq > buffer_seq)
+						{
+							m_sendingBuffer[i]->Dequeue();
+							if (m_sendingBuffer[i]->IsEmpty())
+							{
+								break;
+							}
+							buffer_seq = GetSeq(m_sendingBuffer[i]->Peek()->Copy());
+						}
+					}
+	                if(seq>=m_lastseq[i] && m_available_queue[i]) {
+	                	available_sending_queues.insert(i);
+	                	//queue_index_map[port].erase(qIndex);
+	                	queue_index_map[port].erase(qIndex);
+	                    std::cout<<"Flow finished at qbbid "<<qbbid<< " at "<<Simulator::Now()<<" at port"<<port<<" Num packets:"<<m_lastseq[i]<<", Time taken :"<<Simulator::Now()-starting_times[port]<<" qIndex "<<qIndex<<" \n";
+	                    while(!m_sendingBuffer[i]->IsEmpty()) m_sendingBuffer[i]->Dequeue();
+	                } else {
+	                    //std::cout<<seq<<" "<<m_lastseq[i]<<" "<<i<<"\n";
+	                }
+
+				}
+			}
+
+			if (m_waitAck && seq >= m_milestone_tx[i])
+			{
+				//Got ACK, resume sending
+				m_nextAvail[i] = Simulator::Now();
+				Simulator::Cancel(m_retransmit[i]);
+				m_waitingAck[i] = false;
+				m_milestone_tx[i] += m_chunk;
+				DequeueAndTransmit();
+
+			}
+
+			PointToPointReceive(packet);
+		}
+	}
+
+	void
+		QbbNetDevice::PointToPointReceive(Ptr<Packet> packet)
+	{
+		NS_LOG_FUNCTION(this << packet);
+		uint16_t protocol = 0;
+
+		if (m_receiveErrorModel && m_receiveErrorModel->IsCorrupt(packet))
+		{
+			// 
+			// If we have an error model and it indicates that it is time to lose a
+			// corrupted packet, don't forward this packet up, let it go.
+			//
+			m_phyRxDropTrace(packet);
+		}
+		else
+		{
+			// 
+			// Hit the trace hooks.  All of these hooks are in the same place in this 
+			// device becuase it is so simple, but this is not usually the case in 
+			// more complicated devices.
+			//
+			m_snifferTrace(packet);
+			m_promiscSnifferTrace(packet);
+			m_phyRxEndTrace(packet);
+			//
+			// Strip off the point-to-point protocol header and forward this packet
+			// up the protocol stack.  Since this is a simple point-to-point link,
+			// there is no difference in what the promisc callback sees and what the
+			// normal receive callback sees.
+			//
+			ProcessHeader(packet, protocol);
+
+			if (!m_promiscCallback.IsNull())
+			{
+				m_macPromiscRxTrace(packet);
+				m_promiscCallback(this, packet, protocol, GetRemote(), GetAddress(), NetDevice::PACKET_HOST);
+			}
+
+			m_macRxTrace(packet);
+			m_rxCallback(this, packet, protocol, GetRemote());
+		}
+	}
+
+	uint32_t
+		QbbNetDevice::GetPriority(Ptr<Packet> p) //Pay attention this function modifies the packet!!! Copy the packet before passing in.
+	{
+		UdpHeader udph;
+		p->RemoveHeader(udph);
+		SeqTsHeader seqh;
+		p->RemoveHeader(seqh);
+		return seqh.GetPG();
+	}
+
+	uint32_t
+		QbbNetDevice::GetSeq(Ptr<Packet> p) //Pay attention this function modifies the packet!!! Copy the packet before passing in.
+	{
+		uint16_t protocol;
+		ProcessHeader(p, protocol);
+		Ipv4Header ipv4h;
+		p->RemoveHeader(ipv4h);
+		UdpHeader udph;
+		p->RemoveHeader(udph);
+		SeqTsHeader seqh;
+		p->RemoveHeader(seqh);
+		return seqh.GetSeq();
+	}
+
+	bool
+		QbbNetDevice::Send(Ptr<Packet> packet, const Address &dest, uint16_t protocolNumber)
+	{
+		NS_LOG_FUNCTION(this << packet << dest << protocolNumber);
+		NS_LOG_LOGIC("UID is " << packet->GetUid());
+		if (IsLinkUp() == false) {
+			m_macTxDropTrace(packet);
+			return false;
+		}
+
+		Ipv4Header h;
+		packet->PeekHeader(h);
+		unsigned qIndex;
+		if (h.GetProtocol() == 0xFF || h.GetProtocol() == 0xFE || h.GetProtocol() == 0xFD || h.GetProtocol() == 0xFC )  //QCN or PFC or NACK, go highest priority
+		{
+			qIndex = qCnt - 1;
+		}
+		else
+		{
+			Ptr<Packet> p = packet->Copy();
+			p->RemoveHeader(h);
+
+			if (h.GetProtocol() == 17)
+				qIndex = GetPriority(p);
+			else
+				qIndex = 1; //dctcp
+		}
+
+		Ptr<Packet> p = packet->Copy();
+		AddHeader(packet, protocolNumber);
+
+		if (m_node->GetNodeType() == 0)
+		{
+			//if (m_qcnEnabled && qIndex == qCnt - 1)
+			if (qIndex == qCnt - 1)
+			{
+				m_queue->Enqueue(packet, 0); //QCN uses 0 as the highest priority on NIC
+			}
+			else
+			{
+				Ipv4Header ipv4h;
+				p->RemoveHeader(ipv4h);
+				UdpHeader udph;
+				p->RemoveHeader(udph);
+				uint32_t port = udph.GetSourcePort();
+				uint32_t i;
+				// for (i = 1; i < fCnt; i++)
+				// {
+				// 	if (m_findex_udpport_map[i] == port && m_findex_qindex_map[i] == qIndex)
+				// 		break;
+    //             }
+                if(queue_index_map.find(port) == queue_index_map.end() || queue_index_map[port].find(qIndex) == queue_index_map[port].end()) 
+                {
+                    if(!available_sending_queues.empty())
+                    {
+                    	i = *available_sending_queues.begin();
+                    	available_sending_queues.erase(i);
+					    	std::cout<<"Reusing Queue\n";
+					  	  	m_available_queue[i] = false;
+			        		m_credits[i] = 0;
+			        		m_nextAvail[i] = Simulator::Now();
+			        		//m_findex_udpport_map[i] = 0;
+			       			m_findex_qindex_map[i] = qIndex;
+			        		m_waitingAck[i] = false;
+			        		queue_index_map[port][qIndex] = i;
+			        		starting_times[port] = Simulator::Now();
+			        		m_rate[i] = m_bps;
+			        		//std::cout<<m_bps<<"\n";
+			        		window[i] = uint32_t((m_rate[i].GetBitRate() * 0.00001) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+						if (window[i] < 1) window[i] = 1;
+						curr_seq[i] = 0;
+						m_acked[i] = 0;
+			        		std::cout<<"Starting flow at "<<starting_times[port]<<" port "<<port<<" qbbid "<<qbbid<<" qindex ::"<<qIndex<<" IP "<<ipv4h.GetSource()<<" \n";
+			        		for (uint32_t j = 0; j < maxHop; j++)
+			        		{
+			        			m_rateAll[i][j] = m_bps;
+			        			m_targetRate[i][j] = m_bps;
+			        			Simulator::Cancel(m_rptimer[i][j]);
+			        			Simulator::Cancel(m_resumeAlpha[i][j]);
+						        m_txBytes[i][j] = m_bc;				//we don't need this at the beginning, so it doesn't matter what value it has
+						        m_rpWhile[i][j] = m_rpgTimeReset;	//we don't need this at the beginning, so it doesn't matter what value it has
+						        m_rpByteStage[i][j] = 0;
+						        m_rpTimeStage[i][j] = 0;
+						        m_alpha[i][j] = 0.5;
+						        m_rpStage[i][j] = 0; //not in any qcn stage
+		                   	}
+								if (m_waitAck)
+								{
+									m_milestone_tx[i] = m_chunk;
+								}
+						}
+					else{
+						std::cerr<<"ERROR Out of sender queues\n";
+						NS_ASSERT(false);
+					}
+				    NS_ASSERT(i < fCnt);
+                }
+                else{
+                	i = queue_index_map[port][qIndex];
+                }
+     
+			
+
+
+                //m_lastseq[i]=GetSeq(packet->Copy());
+				if (m_sendingBuffer[i]->GetNPackets() == 8000)
+				{
+					m_sendingBuffer[i]->Dequeue();
+				}
+				m_sendingBuffer[i]->Enqueue(packet->Copy());
+
+				//if (m_qcnEnabled)
+				//{
+				m_queue->Enqueue(packet, i);// Here we are enqueuing at both places--CHECK??
+				if(i!=0 && m_queue->GetNBytes(i)>0)
+				{
+					curr_seq[i] = GetSeq(m_queue->m_queues[i]->Peek()->Copy());
+				}
+				//}
+				/*else
+				{
+					m_queue->Enqueue(packet, qIndex);
+				}*/
+			}
+
+			DequeueAndTransmit();
+		}
+		else //switch
+		{
+			//AddHeader(packet, protocolNumber);
+			if (qIndex != qCnt - 1)			//not pause frame
+			{
+				FlowIdTag t;
+				packet->PeekPacketTag(t);
+				uint32_t inDev = t.GetFlowId();
+				if (m_node->m_broadcom->CheckIngressAdmission(inDev, qIndex, packet->GetSize()) && m_node->m_broadcom->CheckEgressAdmission(m_ifIndex, qIndex, packet->GetSize()))			// Admission control
+				{
+					m_node->m_broadcom->UpdateIngressAdmission(inDev, qIndex, packet->GetSize());
+					m_node->m_broadcom->UpdateEgressAdmission(m_ifIndex, qIndex, packet->GetSize());
+
+					m_macTxTrace(packet);
+					m_queue->Enqueue(packet, qIndex); // go into MMU and queues
+				}
+				DequeueAndTransmit();
+				if (m_node->GetNodeType() == 1)
+				{
+					CheckQueueFull(inDev, qIndex); //check queue full
+				}
+			}
+			else			//pause or cnp, doesn't need admission control, just go
+			{
+				m_queue->Enqueue(packet, qIndex);
+				DequeueAndTransmit();
+			}
+
+		}
+		return true;
+	}
+
+	void
+		QbbNetDevice::CheckQueueFull(uint32_t inDev, uint32_t qIndex)//Pauses only qIndex 3
+	{
+		NS_LOG_FUNCTION(this);
+		Ptr<Ipv4> m_ipv4 = m_node->GetObject<Ipv4>();
+		bool pClasses[qCnt] = { 0 };
+		m_node->m_broadcom->GetPauseClasses(inDev, qIndex, pClasses);
+		Ptr<NetDevice> device = m_ipv4->GetNetDevice(inDev);
+		// for (uint32_t j = 0; j < qCnt; j++)
+		// {
+		if(!enable_priority)
+		{
+			uint32_t j = 3;
+				if (pClasses[j])			// Create the PAUSE packet
+				{
+					//std::cout<<"Pause pAcket generated\n";
+					Ptr<Packet> p = Create<Packet>(0);
+					PauseHeader pauseh(m_pausetime, m_queue->GetNBytes(j), j);
+					p->AddHeader(pauseh);
+					Ipv4Header ipv4h;  // Prepare IPv4 header
+					ipv4h.SetProtocol(0xFE);
+					ipv4h.SetSource(m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
+					ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+					ipv4h.SetPayloadSize(p->GetSize());
+					ipv4h.SetTtl(1);
+					ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+					p->AddHeader(ipv4h);
+					device->Send(p, Mac48Address("ff:ff:ff:ff:ff:ff"), 0x0800);
+					m_node->m_broadcom->m_pause_remote[inDev][qIndex] = true;
+					Simulator::Cancel(m_recheckEvt[inDev][qIndex]);
+					m_recheckEvt[inDev][qIndex] = Simulator::Schedule(MicroSeconds(m_pausetime / 2), &QbbNetDevice::CheckQueueFull, this, inDev, qIndex);
+				}
+			// }
+
+			//ON-OFF
+			for (uint32_t j = 3; j < 4; j++)
+			{
+				if (!m_node->m_broadcom->m_pause_remote[inDev][qIndex])
+					continue;
+				if (m_node->m_broadcom->GetResumeClasses(inDev, qIndex))  // Create the PAUSE packet
+				{
+					Ptr<Packet> p = Create<Packet>(0);
+					PauseHeader pauseh(0, m_queue->GetNBytes(j), j); //resume
+					p->AddHeader(pauseh);
+					Ipv4Header ipv4h;  // Prepare IPv4 header
+					ipv4h.SetProtocol(0xFE);
+					ipv4h.SetSource(m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
+					ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+					ipv4h.SetPayloadSize(p->GetSize());
+					ipv4h.SetTtl(1);
+					ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+					p->AddHeader(ipv4h);
+					device->Send(p, Mac48Address("ff:ff:ff:ff:ff:ff"), 0x0800);
+					m_node->m_broadcom->m_pause_remote[inDev][qIndex] = false;
+					Simulator::Cancel(m_recheckEvt[inDev][qIndex]);
+				}
+			}
+		}
+		else{
+			if(m_node->m_broadcom->ToPause(inDev))
+			{
+				m_node->m_broadcom->pause_sent[inDev] = true;
+				uint32_t j = qIndex;
+				Ptr<Packet> p = Create<Packet>(0);
+				PauseHeader pauseh(m_pausetime, m_queue->GetNBytes(j), j);
+					p->AddHeader(pauseh);
+					Ipv4Header ipv4h;  // Prepare IPv4 header
+					ipv4h.SetProtocol(0xFE);
+					ipv4h.SetSource(m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
+					ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+					ipv4h.SetPayloadSize(p->GetSize());
+					ipv4h.SetTtl(1);
+					ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+					p->AddHeader(ipv4h);
+					device->Send(p, Mac48Address("ff:ff:ff:ff:ff:ff"), 0x0800);
+					m_node->m_broadcom->m_pause_remote[inDev][qIndex] = true;
+					Simulator::Cancel(m_recheckEvt[inDev][3]);
+					m_recheckEvt[inDev][3] = Simulator::Schedule(MicroSeconds(m_pausetime / 2), &QbbNetDevice::CheckQueueFull, this, inDev, 3);
+			}
+			else if(m_node->m_broadcom->ToResume(inDev))
+			{
+				if(m_node->m_broadcom->pause_sent[inDev])
+				{
+
+					uint32_t j = qIndex;
+					Ptr<Packet> p = Create<Packet>(0);
+					PauseHeader pauseh(0, m_queue->GetNBytes(j), j); //resume
+					p->AddHeader(pauseh);
+					Ipv4Header ipv4h;  // Prepare IPv4 header
+					ipv4h.SetProtocol(0xFE);
+					ipv4h.SetSource(m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
+					ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+					ipv4h.SetPayloadSize(p->GetSize());
+					ipv4h.SetTtl(1);
+					ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+					p->AddHeader(ipv4h);
+					device->Send(p, Mac48Address("ff:ff:ff:ff:ff:ff"), 0x0800);
+				}
+				m_node->m_broadcom->pause_sent[inDev] =  false;
+				Simulator::Cancel(m_recheckEvt[inDev][3]);
+			}
+		}
+	}
+
+	bool
+		QbbNetDevice::IsLocal(const Ipv4Address& addr) const
+	{
+		Ptr<Ipv4> ipv4 = m_node->GetObject<Ipv4>();
+		for (unsigned i = 0; i < ipv4->GetNInterfaces(); i++) {
+			for (unsigned j = 0; j < ipv4->GetNAddresses(i); j++) {
+				if (ipv4->GetAddress(i, j).GetLocal() == addr) {
+					return true;
+				};
+			};
+		};
+		return false;
+	}
+
+	void
+		QbbNetDevice::ConnectWithoutContext(const CallbackBase& callback)
+	{
+		NS_LOG_FUNCTION(this);
+		m_sendCb.ConnectWithoutContext(callback);
+	}
+
+	void
+		QbbNetDevice::DisconnectWithoutContext(const CallbackBase& callback)
+	{
+		NS_LOG_FUNCTION(this);
+		m_sendCb.DisconnectWithoutContext(callback);
+	}
+
+	int32_t
+		QbbNetDevice::PrintStatus(std::ostream& os)
+	{
+		os << "Size:";
+		uint32_t sum = 0;
+		for (unsigned i = 0; i < qCnt; ++i) {
+			os << " " << (m_paused[i] ? "q" : "Q") << "[" << i << "]=" << m_queue->GetNBytes(i);
+			sum += m_queue->GetNBytes(i);
+		};
+		os << " sum=" << sum << std::endl;
+		return sum;
+	};
+
+	void
+		QbbNetDevice::PrintStatistics()
+	{
+		if(!enable_qbb_stats) return;
+		//std::cout<<"Came here\n";
+				std::cout<<"Stat id "<<qbbid<<" T "<<Simulator::Now();
+				if(enable_priority)		
+			{
+				for(int i=0; i < qCnt; i++)
+				{
+					if(is_paused)
+					{
+						std::cout<<" P";
+					}
+					if(m_queue->GetNBytes(i) > 0)
+					{
+						std::cout<<" "<<i<<"-";
+							std::cout<<"N-";
+						std::cout<<m_queue->GetNBytes(i);
+					}
+				}
+				std::cout<<"\n";
+			}
+			else{
+				for(int i=3; i < 4; i++)
+				{
+					if(m_paused[i] || m_queue->GetNBytes(i) > 0)
+					{
+						std::cout<<" "<<i<<"-";
+						if(m_paused[i])
+						{
+							std::cout<<"P-";
+						}
+						else{
+							std::cout<<"N-";
+						}
+						std::cout<<m_queue->GetNBytes(i);
+					}
+				}
+				std::cout<<"\n";
+			}
+			std::cout<<"Stat id "<<qbbid<<" T "<<Simulator::Now()<<" Long used "<<m_queue->GetNBytes(4)<<"\n";
+			printStats = Simulator::Schedule(MicroSeconds(5), &QbbNetDevice::PrintStatistics, this);
+			return;
+	}
+
+	bool
+		QbbNetDevice::Attach(Ptr<QbbChannel> ch)
+	{
+		NS_LOG_FUNCTION(this << &ch);
+		m_channel = ch;
+		m_channel->Attach(this);
+		NotifyLinkUp();
+		return true;
+	}
+
+	bool
+		QbbNetDevice::TransmitStart(Ptr<Packet> p)
+	{
+		NS_LOG_FUNCTION(this << p);
+		NS_LOG_LOGIC("UID is " << p->GetUid() << ")");
+		//
+		// This function is called to start the process of transmitting a packet.
+		// We need to tell the channel that we've started wiggling the wire and
+		// schedule an event that will be executed when the transmission is complete.
+		//
+		NS_ASSERT_MSG(m_txMachineState == READY, "Must be READY to transmit");
+		m_txMachineState = BUSY;
+		m_currentPkt = p;
+		m_phyTxBeginTrace(m_currentPkt);
+		Time txTime = Seconds(m_bps.CalculateTxTime(p->GetSize()));
+		Time txCompleteTime = txTime + m_tInterframeGap;
+		NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
+		Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);
+
+		bool result = m_channel->TransmitStart(p, this, txTime);
+		if (result == false)
+		{
+			m_phyTxDropTrace(p);
+		}
+		return result;
+	}
+
+	Address
+		QbbNetDevice::GetRemote(void) const
+	{
+		NS_ASSERT(m_channel->GetNDevices() == 2);
+		for (uint32_t i = 0; i < m_channel->GetNDevices(); ++i)
+		{
+			Ptr<NetDevice> tmp = m_channel->GetDevice(i);
+			if (tmp != this)
+			{
+				return tmp->GetAddress();
+			}
+		}
+		NS_ASSERT(false);
+		return Address();  // quiet compiler.
+	}
+
+	bool
+		QbbNetDevice::ShouldSendCN(uint32_t indev, uint32_t ifindex, uint32_t qIndex)
+	{
+		//if(!enable_priority)
+			return m_node->m_broadcom->ShouldSendCN(indev, ifindex, qIndex);
+		//else{
+		//	return m_node->m_broadcom->ShouldSendCNPort(indev, ifindex, qIndex);
+		//}
+	}
+
+	void
+		QbbNetDevice::CheckandSendQCN(Ipv4Address source, uint32_t qIndex, uint32_t port, uint32_t key) //port is udp port
+	{
+		if (m_node->GetNodeType() > 0)
+			return;
+		if (!m_qcnEnabled)
+			return;
+		
+		//std::cout<<"Generated qcn\n";
+		uint32_t i;
+		for ( i = 0; i < m_ecn_source->size(); ++i)
+		{
+			ECNAccount info = (*m_ecn_source)[i];
+			if (info.source == source && info.qIndex == qIndex && info.port == port )
+			{
+				// if(m_available_receiving[i])
+				// {
+				// 	return;
+				// }
+				if(key != i)
+				{
+					std::cerr<<"Error --- Something wrong with qcn\n";
+				}
+				if (info.ecnbits == 0x03)
+				{
+					// if(m_available_receiving[i])
+					// {
+					// 	std::cout<<"Errot QCN AFTer ack??-----------------------------------\n";
+					// 	//continue;
+					// }
+					Ptr<Packet> p = Create<Packet>(0);
+					CnHeader cn(port, qIndex, info.ecnbits, info.qfb, info.total);	// Prepare CN header
+					p->AddHeader(cn);
+					Ipv4Header head;	// Prepare IPv4 header
+					head.SetDestination(source);
+					Ipv4Address myAddr = m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal();
+					head.SetSource(myAddr);
+					head.SetProtocol(0xFF);
+					head.SetTtl(64);
+					head.SetPayloadSize(p->GetSize());
+					head.SetIdentification(UniformVariable(0, 65536).GetValue());
+					p->AddHeader(head);
+					uint32_t protocolNumber = 2048;
+					AddHeader(p, protocolNumber);	// Attach PPP header
+					//if (m_qcnEnabled)
+						m_queue->Enqueue(p, 0);
+					//else
+					//	m_queue->Enqueue(p, qCnt - 1);
+					((*m_ecn_source)[i]).ecnbits = 0;
+					((*m_ecn_source)[i]).qfb = 0;
+					((*m_ecn_source)[i]).total = 0;
+					DequeueAndTransmit();
+					Simulator::Schedule(MicroSeconds(m_qcn_interval), &QbbNetDevice::CheckandSendQCN, this, source, qIndex, port, key);
+
+				}
+				else
+				{
+					((*m_ecn_source)[i]).ecnbits = 0;
+					((*m_ecn_source)[i]).qfb = 0;
+					((*m_ecn_source)[i]).total = 0;
+					Simulator::Schedule(MicroSeconds(m_qcn_interval), &QbbNetDevice::CheckandSendQCN, this, source, qIndex, port, key);
+				}
+				break;
+			}
+			else
+			{
+				//std::cerr<<"Error : check and send qcn called with incorrect arguments\n";
+				continue;
+			}
+		}
+		//NS_ASSERT(i<fCnt);
+		return;
+	}
+
+	void
+		QbbNetDevice::SetBroadcomParams(
+			uint32_t pausetime,
+			double qcn_interval,
+			double qcn_resume_interval,
+			double g,
+			DataRate minRate,
+			DataRate rai,
+			uint32_t fastrecover_times
+		)
+	{
+		m_pausetime = pausetime;
+		m_qcn_interval = qcn_interval;
+		m_rpgTimeReset = qcn_resume_interval;
+		m_g = g;
+		m_minRate = m_minRate;
+		m_rai = rai;
+		m_rpgThreshold = fastrecover_times;
+	}
+
+	Ptr<Channel>
+		QbbNetDevice::GetChannel(void) const
+	{
+		return m_channel;
+	}
+
+	uint32_t
+		QbbNetDevice::GetUsedBuffer(uint32_t port, uint32_t qIndex)
+	{
+		uint32_t i;
+		//if (m_qcnEnabled)
+		//{
+			// for (i = 1; i < m_queue->m_fcount; i++)
+			// {
+			// 	if (m_findex_qindex_map[i] == qIndex && m_findex_udpport_map[i] == port)
+			// 		break;
+			// }
+            if(queue_index_map.find(port)==queue_index_map.end() || queue_index_map[port].find(qIndex)==queue_index_map[port].end()) return 0;
+            //NS_ASSERT(i<fCnt);
+            i = queue_index_map[port][qIndex];
+			return m_queue->GetNBytes(i);
+		//}
+		//else
+		//{
+			//return m_queue->GetNBytes(qIndex);
+		//}
+	}
+
+
+	void
+		QbbNetDevice::SetQueue(Ptr<BEgressQueue> q)
+	{
+		NS_LOG_FUNCTION(this << q);
+		m_queue = q;
+	}
+
+	Ptr<BEgressQueue>
+		QbbNetDevice::GetQueue()
+	{
+		return m_queue;
+	}
+
+
+	void
+		QbbNetDevice::ResumeECNState(uint32_t inDev)
+	{
+		m_ECNState[inDev] = 0;
+	}
+
+	void
+		QbbNetDevice::ResumeECNIngressState(uint32_t inDev)
+	{
+		m_ECNIngressCount[inDev] = 0;
+	}
+
+
+	void
+		QbbNetDevice::ResumeECNEgressState(uint32_t inDev)
+	{
+		m_ECNEgressCount[inDev] = 0;
+	}
+
+
+	void
+		QbbNetDevice::rpr_adjust_rates(uint32_t fIndex, uint32_t hop)
+	{
+		AdjustRates(fIndex, hop, DataRate("0bps"));
+		rpr_fast_recovery(fIndex, hop);
+		return;
+	}
+
+	void
+		QbbNetDevice::rpr_fast_recovery(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpStage[fIndex][hop] = 1;
+		return;
+	}
+
+
+	void
+		QbbNetDevice::rpr_active_increase(uint32_t fIndex, uint32_t hop)
+	{
+		AdjustRates(fIndex, hop, m_rai);
+		m_rpStage[fIndex][hop] = 2;
+	}
+
+
+	void
+		QbbNetDevice::rpr_active_byte(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpByteStage[fIndex][hop]++;
+		m_txBytes[fIndex][hop] = m_bc;
+		rpr_active_increase(fIndex, hop);
+	}
+
+	void
+		QbbNetDevice::rpr_active_time(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpTimeStage[fIndex][hop]++;
+		m_rpWhile[fIndex][hop] = m_rpgTimeReset;
+		Simulator::Cancel(m_rptimer[fIndex][hop]);
+		m_rptimer[fIndex][hop] = Simulator::Schedule(MicroSeconds(m_rpWhile[fIndex][hop]), &QbbNetDevice::rpr_timer_wrapper, this, fIndex, hop);
+		rpr_active_select(fIndex, hop);
+	}
+
+
+	void
+		QbbNetDevice::rpr_fast_byte(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpByteStage[fIndex][hop]++;
+		m_txBytes[fIndex][hop] = m_bc;
+		if (m_rpByteStage[fIndex][hop] < m_rpgThreshold)
+		{
+			rpr_adjust_rates(fIndex, hop);
+		}
+		else
+		{
+			rpr_active_select(fIndex, hop);
+		}
+			
+		return;
+	}
+
+	void
+		QbbNetDevice::rpr_fast_time(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpTimeStage[fIndex][hop]++;
+		m_rpWhile[fIndex][hop] = m_rpgTimeReset;
+		Simulator::Cancel(m_rptimer[fIndex][hop]);
+		m_rptimer[fIndex][hop] = Simulator::Schedule(MicroSeconds(m_rpWhile[fIndex][hop]), &QbbNetDevice::rpr_timer_wrapper, this, fIndex, hop);
+		if (m_rpTimeStage[fIndex][hop] < m_rpgThreshold)
+			rpr_adjust_rates(fIndex, hop);
+		else
+			rpr_active_select(fIndex, hop);
+		return;
+	}
+
+
+	void
+		QbbNetDevice::rpr_hyper_byte(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpByteStage[fIndex][hop]++;
+		m_txBytes[fIndex][hop] = m_bc / 2;
+		rpr_hyper_increase(fIndex, hop);
+	}
+
+
+	void
+		QbbNetDevice::rpr_hyper_time(uint32_t fIndex, uint32_t hop)
+	{
+		m_rpTimeStage[fIndex][hop]++;
+		m_rpWhile[fIndex][hop] = m_rpgTimeReset / 2;
+		Simulator::Cancel(m_rptimer[fIndex][hop]);
+		m_rptimer[fIndex][hop] = Simulator::Schedule(MicroSeconds(m_rpWhile[fIndex][hop]), &QbbNetDevice::rpr_timer_wrapper, this, fIndex, hop);
+		rpr_hyper_increase(fIndex, hop);
+	}
+
+
+	void
+		QbbNetDevice::rpr_active_select(uint32_t fIndex, uint32_t hop)
+	{
+		if (m_rpByteStage[fIndex][hop] < m_rpgThreshold || m_rpTimeStage[fIndex][hop] < m_rpgThreshold)
+			rpr_active_increase(fIndex, hop);
+		else
+			rpr_hyper_increase(fIndex, hop);
+		return;
+	}
+
+
+	void
+		QbbNetDevice::rpr_hyper_increase(uint32_t fIndex, uint32_t hop)
+	{
+		AdjustRates(fIndex, hop, m_rhai*(std::min(m_rpByteStage[fIndex][hop], m_rpTimeStage[fIndex][hop]) - m_rpgThreshold + 1));
+		m_rpStage[fIndex][hop] = 3;
+		return;
+	}
+
+	void
+		QbbNetDevice::AdjustRates(uint32_t fIndex, uint32_t hop, DataRate increase)
+	{
+		if (((m_rpByteStage[fIndex][hop] == 1) || (m_rpTimeStage[fIndex][hop] == 1)) && (m_targetRate[fIndex][hop] > 10 * m_rateAll[fIndex][hop]))
+			m_targetRate[fIndex][hop] /= 8;
+		else
+			m_targetRate[fIndex][hop] += increase;
+
+		m_rateAll[fIndex][hop] = (m_rateAll[fIndex][hop] / 2) + (m_targetRate[fIndex][hop] / 2);
+
+		if (m_rateAll[fIndex][hop] > m_bps)
+			m_rateAll[fIndex][hop] = m_bps;
+
+		m_rate[fIndex] = m_bps;
+		for (uint32_t j = 0; j < maxHop; j++)
+			m_rate[fIndex] = std::min(m_rate[fIndex], m_rateAll[fIndex][j]);
+
+		window[fIndex] = uint32_t((m_rate[fIndex].GetBitRate() * 0.00001) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+		if (window[fIndex] < 1) window[fIndex] = 1;
+		return;
+	}
+
+	void
+		QbbNetDevice::rpr_cnm_received(uint32_t findex, uint32_t hop, double fraction)
+	{
+		// std::cerr<<"RPR CNM received\n";
+		// std::cerr<<m_rpgTimeReset<<" mRP timer\n";
+		// std::cerr<<m_bc<<" m_bc\n";
+		// std::cerr<<m_g<<" m_g\n";
+
+		if (!m_EcnClampTgtRateAfterTimeInc && !m_EcnClampTgtRate)
+		{
+			if (m_rpByteStage[findex][hop] != 0)
+			{
+				m_targetRate[findex][hop] = m_rateAll[findex][hop];
+				m_txBytes[findex][hop] = m_bc;
+			}
+		}
+		else if (m_EcnClampTgtRate)
+		{
+			m_targetRate[findex][hop] = m_rateAll[findex][hop];
+			m_txBytes[findex][hop] = m_bc; //for fluid model, QCN standard doesn't have this.
+		}
+		else
+		{
+			if (m_rpByteStage[findex][hop] != 0 || m_rpTimeStage[findex][hop] != 0)
+			{
+				m_targetRate[findex][hop] = m_rateAll[findex][hop];
+				m_txBytes[findex][hop] = m_bc;
+			}
+		}
+		m_rpByteStage[findex][hop] = 0;
+		m_rpTimeStage[findex][hop] = 0;
+		//m_alpha[findex][hop] = (1-m_g)*m_alpha[findex][hop] + m_g*fraction;
+		m_alpha[findex][hop] = (1 - m_g)*m_alpha[findex][hop] + m_g; 	//binary feedback
+		m_rateAll[findex][hop] = std::max(m_minRate, m_rateAll[findex][hop] * (1 - m_alpha[findex][hop] / 2));
+		Simulator::Cancel(m_resumeAlpha[findex][hop]);
+		m_resumeAlpha[findex][hop] = Simulator::Schedule(MicroSeconds(m_alpha_resume_interval), &QbbNetDevice::ResumeAlpha, this, findex, hop);
+		m_rpWhile[findex][hop] = m_rpgTimeReset;
+		Simulator::Cancel(m_rptimer[findex][hop]);
+		m_rptimer[findex][hop] = Simulator::Schedule(MicroSeconds(m_rpWhile[findex][hop]), &QbbNetDevice::rpr_timer_wrapper, this, findex, hop);
+		rpr_fast_recovery(findex, hop);
+	}
+
+	void
+		QbbNetDevice::rpr_timer_wrapper(uint32_t fIndex, uint32_t hop)
+	{
+		if (m_rpStage[fIndex][hop] == 1)
+		{
+			rpr_fast_time(fIndex, hop);
+		}
+		else if (m_rpStage[fIndex][hop] == 2)
+		{
+			rpr_active_time(fIndex, hop);
+		}
+		else if (m_rpStage[fIndex][hop] == 3)
+		{
+			rpr_hyper_time(fIndex, hop);
+		}
+		window[fIndex] = uint32_t((m_rate[fIndex].GetBitRate() * 0.00001) / (1000 * 8)) ;// propagation delay 12.5 us, Packet Size assumed to be 1000Bytes
+		if (window[fIndex] < 1) window[fIndex] = 1;
+		return;
+	}
+
+	void
+		QbbNetDevice::ResumeAlpha(uint32_t fIndex, uint32_t hop)
+	{
+		//std::cerr<<"Resume alpha called\n";
+		m_alpha[fIndex][hop] = (1 - m_g)*m_alpha[fIndex][hop];
+		Simulator::Cancel(m_resumeAlpha[fIndex][hop]);
+		m_resumeAlpha[fIndex][hop] = Simulator::Schedule(MicroSeconds(m_alpha_resume_interval), &QbbNetDevice::ResumeAlpha, this, fIndex, hop);
+	}
+
+
+	int
+		QbbNetDevice::ReceiverCheckSeq(uint32_t seq, uint32_t key, uint32_t fseq, uint32_t port, Ipv4Address src, uint32_t qIndex, uint32_t size)
+	{
+		uint32_t expected = ReceiverNextExpectedSeq[key];
+        
+
+        //std::cout<<"Last Packet"<<seq<<" "<<fseq<<"\n";
+		if (seq == expected)
+		{
+			if(enable_rate_stats && seq%n_int==0)
+			{
+				std::cout<<"In "<<src<<" "<<port<<" "<<seq<<" "<<Simulator::Now()<<" \n";
+			}
+			ReceiverNextExpectedSeq[key] = expected + 1;
+            if (seq == fseq - 1){
+                ReceiverNextExpectedSeq[key]=fseq+1;
+                m_available_receiving[key] = true;
+                receiver_index_map[src.Get()][port].erase(qIndex);
+                available_receiving_queues.insert(key);
+                std::cout<<"Received the last packet on port "<<port<<" at "<<Simulator::Now()<<" IP "<<src<<" qbbid "<<qbbid<<" size "<<size<<" \n";
+                return 1;
+            }
+			if (ReceiverNextExpectedSeq[key] > m_milestone_rx[key])
+			{
+				m_milestone_rx[key] += m_ack_interval;
+				return 1; //Generate ACK
+			}
+			else if (ReceiverNextExpectedSeq[key] % m_chunk == 0)
+			{
+				return 1;
+			}
+			else
+			{
+				return 5;
+			}
+
+		}
+		else if (seq > expected)
+		{
+			// Generate NACK
+			if (Simulator::Now() > m_nackTimer[key] || m_lastNACK[key] != expected)
+			{
+				m_nackTimer[key] = Simulator::Now() + MicroSeconds(m_nack_interval);
+				m_lastNACK[key] = expected;
+				if (m_backto0 && !m_testRead)
+				{
+					ReceiverNextExpectedSeq[key] = ReceiverNextExpectedSeq[key] / m_chunk*m_chunk;
+				}
+				return 2;
+			}
+			else
+				return 4;
+		}
+		else
+		{
+			// Duplicate. 
+			return 3;
+		}
+	}
+	void
+		QbbNetDevice::FlowFinished(uint32_t port, uint32_t pg, uint32_t end_seq) {
+           uint32_t i=1;
+           // for(i = 1; i < fCnt; i++) {
+           //      if (m_findex_udpport_map[i] == port && m_findex_qindex_map[i] == pg)
+           //          break;
+           // }
+           if(queue_index_map.find(port)==queue_index_map.end() || queue_index_map[port].find(pg)==queue_index_map[port].end())
+           {
+           		std::cerr<<"ERROR---Finishing a flow that does not exist\n";
+           		return;
+           }
+           // NS_ASSERT(i<fCnt);
+           i = queue_index_map[port][pg];
+           m_available_queue[i] = true;
+           // while(!m_sendingBuffer[i]->IsEmpty())
+           // {
+           // 	m_sendingBuffer[i]->Dequeue();
+           // }
+           m_lastseq[i]=end_seq;
+           //queue_index_map[port].erase(pg);
+           //std::cout<<"Queue "<<i<<" available"<<"\n";
+        }
+
+} // namespace ns3
+
